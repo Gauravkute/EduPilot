@@ -1,0 +1,9 @@
+#To make virtual environment
+python -m venv test_env
+#To start virtual environment
+test_env\Scripts\activate
+#To deactivate virtual envrionment
+deactivate
+
+#To run 
+streamlit run app.py
