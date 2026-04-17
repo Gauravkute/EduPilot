@@ -1,19 +1,12 @@
 """
-app_streamlit.py — Streamlit File Extractor
-Drop-in replacement for the Flask app.py
-
-Directory structure stays EXACTLY the same:
-  backend/
-    app_streamlit.py        ← THIS FILE (run with: streamlit run app_streamlit.py)
-    detect_file_type.py
-    extractor/
-      __init__.py
-      extract_*.py
+app.py — Streamlit File Extractor + Pipeline
+Two tabs:
+  1. Extract   — raw extractor output (existing behaviour)
+  2. Pipeline  — full clean → structure → chunk with stats + log
 
 Run:
     cd backend
-    pip install streamlit
-    streamlit run app_streamlit.py
+    streamlit run app.py
 """
 
 import sys
@@ -23,111 +16,122 @@ import tempfile
 import pandas as pd
 import streamlit as st
 from pathlib import Path
+import logging
 
-# ── path setup (same as app.py) ──────────────────────────────────────────────
+# ── path setup ───────────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from extractor import extract  # your existing extractor package
+from extractor import extract       # existing extractor package
+from pipeline  import run_pipeline  # NEW: end-to-end pipeline
 
 
 # ── page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="File Extractor",
-    page_icon="🔍",
+    page_title="DocFlow",
+    page_icon="⬡",
     layout="wide",
 )
 
 # ── custom CSS ────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Bricolage+Grotesque:wght@400;600;800&display=swap');
 
 html, body, [class*="css"] {
-    font-family: 'Syne', sans-serif !important;
+    font-family: 'Bricolage Grotesque', sans-serif !important;
+    background-color: #0c0c10 !important;
+    color: #d8d8e8 !important;
 }
-code, pre, .mono {
-    font-family: 'Space Mono', monospace !important;
-}
+code, pre, .mono { font-family: 'IBM Plex Mono', monospace !important; }
 
-/* Dark background override */
-.stApp { background-color: #0a0a0f; }
-
-/* Hide Streamlit default header/footer */
 #MainMenu, footer, header { visibility: hidden; }
+.stApp { background-color: #0c0c10; }
 
-/* Custom header */
-.fx-header {
-    padding: 1.5rem 0 1rem 0;
-    border-bottom: 1px solid #2a2a3a;
-    margin-bottom: 1.5rem;
-    display: flex;
-    align-items: center;
-    gap: 1rem;
+/* header */
+.df-header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 1.6rem 0 1.2rem 0;
+    border-bottom: 1px solid #1e1e2e;
+    margin-bottom: 1.6rem;
 }
-.fx-header h1 {
-    font-family: 'Syne', sans-serif;
-    font-weight: 800;
-    font-size: 1.5rem;
-    color: #e8e8f0;
-    margin: 0;
-}
-.fx-pill {
-    font-family: 'Space Mono', monospace;
-    font-size: 0.65rem;
-    background: #7c6dfa;
-    color: #fff;
-    padding: 2px 10px;
-    border-radius: 99px;
-}
-
-/* Detection badges */
-.badge {
-    display: inline-block;
-    font-family: 'Space Mono', monospace;
-    font-size: 0.7rem;
-    background: rgba(124,109,250,0.15);
-    color: #7c6dfa;
-    border: 1px solid #7c6dfa;
-    padding: 1px 8px;
-    border-radius: 4px;
-    margin-right: 6px;
-}
-.badge-success { background: rgba(109,250,170,0.12); color: #6dfaaa; border-color: #6dfaaa; }
-.badge-error   { background: rgba(250,109,109,0.12); color: #fa6d6d; border-color: #fa6d6d; }
-
-/* Section cards */
-.fx-card {
-    background: #13131a;
-    border: 1px solid #2a2a3a;
-    border-radius: 12px;
-    padding: 1.25rem;
-    margin-bottom: 1rem;
-}
-.fx-card-title {
-    font-family: 'Syne', sans-serif;
-    font-weight: 700;
-    font-size: 0.78rem;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-    color: #666680;
-    margin-bottom: 0.75rem;
-}
-
-/* Error box */
-.error-box {
-    background: rgba(250,109,109,0.08);
-    border: 1px solid #fa6d6d;
+.df-logo {
+    width: 36px; height: 36px;
+    background: linear-gradient(135deg, #5c6bff 0%, #b06bff 100%);
     border-radius: 8px;
-    padding: 1rem 1.25rem;
-    font-family: 'Space Mono', monospace;
-    font-size: 0.78rem;
-    color: #fa6d6d;
-    white-space: pre-wrap;
-    word-break: break-word;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.1rem; color: #fff; font-weight: 800;
+}
+.df-title { font-size: 1.4rem; font-weight: 800; color: #f0f0ff; margin: 0; }
+.df-sub   { font-family: 'IBM Plex Mono', monospace; font-size: 0.65rem;
+            color: #5c5c7a; margin-left: auto; }
+
+/* stat cards */
+.stat-row { display: flex; gap: 10px; margin-bottom: 1rem; }
+.stat-card {
+    flex: 1; background: #13131c; border: 1px solid #1e1e2e;
+    border-radius: 10px; padding: 0.9rem 1rem;
+}
+.stat-label { font-size: 0.65rem; font-family: 'IBM Plex Mono', monospace;
+              color: #5c5c7a; text-transform: uppercase; letter-spacing: .06em; }
+.stat-value { font-size: 1.5rem; font-weight: 800; color: #f0f0ff; line-height: 1.2; }
+.stat-sub   { font-size: 0.7rem; color: #5c5c7a; margin-top: 2px; }
+
+/* stage timeline */
+.timeline { margin: .5rem 0 1.2rem 0; }
+.tl-item  {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 0; border-bottom: 1px solid #1e1e2e;
+    font-family: 'IBM Plex Mono', monospace; font-size: .75rem;
+}
+.tl-dot   { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.dot-ok   { background: #4dffa0; box-shadow: 0 0 6px #4dffa055; }
+.dot-err  { background: #ff5c7a; box-shadow: 0 0 6px #ff5c7a55; }
+.tl-name  { color: #a0a0c8; width: 90px; }
+.tl-ms    { color: #5c5c7a; margin-left: auto; }
+.tl-status{ color: #d8d8e8; }
+
+/* chunk card */
+.chunk-card {
+    background: #13131c; border: 1px solid #1e1e2e;
+    border-radius: 10px; padding: 1rem 1.2rem; margin-bottom: .75rem;
+}
+.chunk-meta { display: flex; gap: 10px; margin-bottom: .6rem; flex-wrap: wrap; }
+.tag {
+    font-family: 'IBM Plex Mono', monospace; font-size: .65rem;
+    padding: 2px 9px; border-radius: 99px; border: 1px solid;
+}
+.tag-section { color: #7c8fff; border-color: #7c8fff30; background: #7c8fff12; }
+.tag-tokens  { color: #4dffa0; border-color: #4dffa030; background: #4dffa012; }
+.tag-type    { color: #b06bff; border-color: #b06bff30; background: #b06bff12; }
+.chunk-id    { font-family: 'IBM Plex Mono', monospace; font-size: .6rem; color: #3a3a5a; }
+.chunk-text  { font-size: .82rem; color: #c8c8e0; white-space: pre-wrap;
+               line-height: 1.55; margin-top: .5rem; }
+
+/* error */
+.err-box {
+    background: rgba(255,92,122,.07); border: 1px solid #ff5c7a;
+    border-radius: 8px; padding: 1rem 1.2rem;
+    font-family: 'IBM Plex Mono', monospace; font-size: .75rem;
+    color: #ff5c7a; white-space: pre-wrap;
 }
 
-/* Streamlit widget text color fixes */
-label, .stMarkdown p { color: #e8e8f0 !important; }
-.stTextInput input, .stSelectbox select { background: #13131a !important; color: #e8e8f0 !important; }
+/* badge row */
+.badge-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 1rem; }
+.badge {
+    font-family: 'IBM Plex Mono', monospace; font-size: .65rem;
+    padding: 3px 10px; border-radius: 5px; border: 1px solid #2a2a3e;
+    background: #13131c; color: #8888b0;
+}
+.badge-hi { background: #7c8fff18; color: #7c8fff; border-color: #7c8fff40; }
+
+/* upload area label */
+label, .stMarkdown p { color: #d8d8e8 !important; }
+.stTextInput input    { background: #13131c !important; color: #e8e8f0 !important; }
+
+/* tab styling */
+.stTabs [role="tab"]           { font-family: 'IBM Plex Mono', monospace !important;
+                                  font-size: .8rem !important; color: #5c5c7a !important; }
+.stTabs [aria-selected="true"] { color: #f0f0ff !important;
+                                  border-bottom: 2px solid #7c8fff !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -135,276 +139,327 @@ label, .stMarkdown p { color: #e8e8f0 !important; }
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def format_bytes(b: int) -> str:
-    if b < 1024:        return f"{b} B"
-    if b < 1_048_576:   return f"{b/1024:.1f} KB"
+    if b < 1024:      return f"{b} B"
+    if b < 1_048_576: return f"{b/1024:.1f} KB"
     return f"{b/1_048_576:.1f} MB"
 
 
-def save_upload_to_temp(uploaded_file) -> str:
-    """Save a Streamlit UploadedFile to a temp path; returns the path."""
+def save_upload(uploaded_file) -> str:
     suffix = Path(uploaded_file.name).suffix or ".bin"
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
-    os.close(tmp_fd)
-    with open(tmp_path, "wb") as f:
+    fd, path = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    with open(path, "wb") as f:
         f.write(uploaded_file.getvalue())
-    return tmp_path
+    return path
 
+
+# ── Extract tab renderers (unchanged from original) ───────────────────────────
 
 def render_detection(result: dict):
-    """Show file type detection metadata."""
-    cols = st.columns(4)
+    cols   = st.columns(4)
     labels = ["type", "mime", "source", "error"]
     for col, label in zip(cols, labels):
         val = result.get(label) or ("none" if label == "error" else "—")
-        badge_cls = "badge-error" if label == "error" and result.get("error") else \
-                    "badge-success" if label == "type" else "badge"
         col.markdown(
-            f'<div class="fx-card"><div class="fx-card-title">{label}</div>'
-            f'<span class="badge {badge_cls}">{val}</span></div>',
-            unsafe_allow_html=True
+            f'<div style="background:#13131c;border:1px solid #1e1e2e;border-radius:10px;'
+            f'padding:.8rem 1rem"><div style="font-size:.6rem;font-family:IBM Plex Mono,monospace;'
+            f'color:#5c5c7a;text-transform:uppercase;letter-spacing:.06em;margin-bottom:.4rem">'
+            f'{label}</div><span class="badge badge-hi">{val}</span></div>',
+            unsafe_allow_html=True,
         )
 
 
 def render_pdf(c: dict):
-    st.markdown(f'<div class="fx-card"><div class="fx-card-title">Document Info</div>'
-                f'Pages: <b style="color:#e8e8f0">{c.get("page_count","—")}</b></div>',
-                unsafe_allow_html=True)
-
+    st.markdown(f'**Pages:** {c.get("page_count", "—")}')
     meta = c.get("metadata", {})
     if meta:
-        with st.expander("📄 Document Metadata", expanded=False):
-            for k, v in meta.items():
-                st.markdown(f"`{k}` → **{v}**")
-
-    pages = c.get("pages", [])
-    for pg in pages:
-        with st.expander(f"Page {pg['page']} · {pg['mode']}  |  "
-                         f"{pg['table_count']} tables · {pg['image_count']} images"):
+        with st.expander("📄 Metadata"):
+            for k, v in meta.items(): st.markdown(f"`{k}` → **{v}**")
+    for pg in c.get("pages", []):
+        with st.expander(f"Page {pg['page']} · {pg['mode']}  |  {pg['table_count']} tables"):
             st.text_area("Text", value=pg.get("text", "(no text)"),
-                         height=150, key=f"pdf_pg_{pg['page']}", disabled=True)
-
-            for i, table in enumerate(pg.get("tables", [])):
+                         height=130, key=f"pdf_{pg['page']}", disabled=True)
+            for i, tbl in enumerate(pg.get("tables", [])):
                 st.markdown(f"**Table {i+1}**")
-                if table and len(table) > 1:
-                    df = pd.DataFrame(table[1:], columns=table[0])
-                    st.dataframe(df, use_container_width=True)
-                elif table:
-                    st.dataframe(pd.DataFrame(table), use_container_width=True)
-
-            images = pg.get("images", [])
-            if images:
-                chips = " ".join(
-                    f'<span class="badge">{img["format"]} {img["width"]}×{img["height"]}</span>'
-                    for img in images
-                )
-                st.markdown(f"**Embedded images:** {chips}", unsafe_allow_html=True)
+                df = pd.DataFrame(tbl[1:], columns=tbl[0]) if len(tbl) > 1 else pd.DataFrame(tbl)
+                st.dataframe(df, use_container_width=True)
 
 
 def render_docx(c: dict):
-    meta = c.get("metadata", {})
-    paras = c.get("paragraphs", c.get("paragraph", []))  # handle both key names
+    paras  = c.get("paragraphs", [])
     tables = c.get("tables", [])
-
-    col1, col2 = st.columns(2)
-    col1.metric("Paragraphs", len(paras))
-    col2.metric("Tables", len(tables))
-
+    c1, c2 = st.columns(2)
+    c1.metric("Paragraphs", len(paras))
+    c2.metric("Tables", len(tables))
+    meta = c.get("metadata", {})
     if meta:
-        with st.expander("📄 Document Metadata"):
-            for k, v in meta.items():
-                st.markdown(f"`{k}` → **{v}**")
-
+        with st.expander("📄 Metadata"):
+            for k, v in meta.items(): st.markdown(f"`{k}` → **{v}**")
     if paras:
         with st.expander(f"📝 Paragraphs ({len(paras)})", expanded=True):
             for p in paras:
-                style_color = "#7c6dfa" if "Heading" in p.get("style","") else "#666680"
+                clr = "#7c8fff" if "Heading" in p.get("style", "") else "#5c5c7a"
                 st.markdown(
-                    f'<div style="border-left:2px solid {style_color};padding-left:.75rem;margin-bottom:.6rem">'
-                    f'<span style="font-size:.65rem;color:{style_color};font-family:Space Mono,monospace">'
+                    f'<div style="border-left:2px solid {clr};padding-left:.75rem;margin-bottom:.5rem">'
+                    f'<span style="font-size:.62rem;color:{clr};font-family:IBM Plex Mono,monospace">'
                     f'{p.get("style","")}</span>'
-                    f'<div style="color:#e8e8f0;font-size:.85rem">{p.get("text","")}</div></div>',
-                    unsafe_allow_html=True
+                    f'<div style="color:#d8d8e8;font-size:.84rem">{p.get("text","")}</div></div>',
+                    unsafe_allow_html=True,
                 )
-
-    for i, table in enumerate(tables):
-        with st.expander(f"📊 Table {i+1} ({len(table)} rows)"):
-            if table and len(table) > 1:
-                df = pd.DataFrame(table[1:], columns=table[0])
-                st.dataframe(df, use_container_width=True)
-            elif table:
-                st.dataframe(pd.DataFrame(table), use_container_width=True)
+    for i, tbl in enumerate(tables):
+        with st.expander(f"📊 Table {i+1}"):
+            df = pd.DataFrame(tbl[1:], columns=tbl[0]) if len(tbl) > 1 else pd.DataFrame(tbl)
+            st.dataframe(df, use_container_width=True)
 
 
 def render_pptx(c: dict):
     st.metric("Slides", c.get("slide_count", 0))
     for slide in c.get("slides", []):
-        with st.expander(f"🖼 Slide {slide['slide']}  |  {slide['text_count']} text items"):
-            texts = slide.get("texts", [])
-            if texts:
-                for t in texts:
-                    st.markdown(f"- {t}")
-            notes = slide.get("notes", "")
-            if notes:
-                st.caption(f"📝 Notes: {notes}")
+        with st.expander(f"🖼 Slide {slide['slide']}  |  {slide['text_count']} items"):
+            for t in slide.get("texts", []): st.markdown(f"- {t}")
+            if slide.get("notes"): st.caption(f"📝 {slide['notes']}")
 
 
 def render_xlsx(c: dict):
     st.metric("Sheets", c.get("sheet_count", 0))
-    for sheet_name, rows in c.get("sheets", {}).items():
-        with st.expander(f"📊 {sheet_name}  ({len(rows)} rows)", expanded=True):
-            if rows and len(rows) > 1:
-                df = pd.DataFrame(rows[1:], columns=rows[0])
+    for name, rows in c.get("sheets", {}).items():
+        with st.expander(f"📊 {name}  ({len(rows)} rows)", expanded=True):
+            if rows:
+                df = pd.DataFrame(rows[1:], columns=rows[0]) if len(rows) > 1 else pd.DataFrame(rows)
                 st.dataframe(df, use_container_width=True)
-            elif rows:
-                st.dataframe(pd.DataFrame(rows), use_container_width=True)
-            else:
-                st.caption("Empty sheet")
 
 
 def render_html(c: dict):
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Title", c.get("title") or "—")
-    col2.metric("Lines", len(c.get("text_lines", [])))
-    col3.metric("Links", len(c.get("links", [])))
-
-    lines = c.get("text_lines", [])
-    if lines:
-        with st.expander("📄 Text Content", expanded=True):
-            st.text_area("", value="\n".join(lines), height=200, disabled=True)
-
-    links = c.get("links", [])
-    if links:
-        with st.expander(f"🔗 Links ({len(links)})"):
-            df = pd.DataFrame(links)
-            st.dataframe(df, use_container_width=True)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Title", c.get("title") or "—")
+    c2.metric("Lines", len(c.get("text_lines", [])))
+    c3.metric("Links", len(c.get("links", [])))
+    with st.expander("📄 Text", expanded=True):
+        st.text_area("", value="\n".join(c.get("text_lines", [])), height=200, disabled=True)
+    if c.get("links"):
+        with st.expander(f"🔗 Links ({len(c['links'])})"):
+            st.dataframe(pd.DataFrame(c["links"]), use_container_width=True)
 
 
 def render_txt(c: dict):
-    col1, col2 = st.columns(2)
-    col1.metric("Total Lines", c.get("line_count", 0))
-    col2.metric("Non-empty Lines", c.get("non_empty_lines", 0))
-    lines = c.get("lines", [])
-    if lines:
-        with st.expander("📄 Content", expanded=True):
-            st.text_area("", value="\n".join(lines), height=300, disabled=True)
+    c1, c2 = st.columns(2)
+    c1.metric("Total Lines", c.get("line_count", 0))
+    c2.metric("Non-empty",   c.get("non_empty_lines", 0))
+    with st.expander("📄 Content", expanded=True):
+        st.text_area("", value="\n".join(c.get("lines", [])), height=300, disabled=True)
 
 
 def render_image(c: dict):
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Format", c.get("format", "—"))
-    col2.metric("Mode", c.get("mode", "—"))
-    col3.metric("Width", c.get("width", "—"))
-    col4.metric("Height", c.get("height", "—"))
-    exif = c.get("exif", {})
-    if exif:
-        with st.expander("📷 EXIF Data"):
-            for k, v in exif.items():
-                st.markdown(f"`{k}` → {v}")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Format", c.get("format", "—"))
+    c2.metric("Mode",   c.get("mode",   "—"))
+    c3.metric("Width",  c.get("width",  "—"))
+    c4.metric("Height", c.get("height", "—"))
+    if c.get("exif"):
+        with st.expander("📷 EXIF"):
+            for k, v in c["exif"].items(): st.markdown(f"`{k}` → {v}")
 
 
 def render_content(result: dict):
-    ftype = result.get("type")
-    c = result.get("content")
-
     if result.get("error"):
-        tb = result.get("traceback", "")
-        st.markdown(
-            f'<div class="error-box">⚠ {result["error"]}'
-            f'{"<br><br>Traceback:<br>" + tb if tb else ""}</div>',
-            unsafe_allow_html=True
-        )
+        st.markdown(f'<div class="err-box">⚠ {result["error"]}</div>', unsafe_allow_html=True)
         return
-
+    c = result.get("content")
     if not c:
         st.warning("No content returned.")
         return
-
-    dispatch = {
-        "pdf":  render_pdf,
-        "docx": render_docx,
-        "pptx": render_pptx,
-        "xlsx": render_xlsx,
-        "html": render_html,
-        "txt":  render_txt,
-        "jpg":  render_image,
-        "png":  render_image,
-    }
-
-    renderer = dispatch.get(ftype)
-    if renderer:
-        renderer(c)
-    else:
-        st.json(c)  # fallback: raw JSON
+    dispatch = {"pdf": render_pdf, "docx": render_docx, "pptx": render_pptx,
+                "xlsx": render_xlsx, "html": render_html, "txt": render_txt,
+                "jpg": render_image, "png": render_image}
+    fn = dispatch.get(result.get("type"))
+    fn(c) if fn else st.json(c)
 
 
-# ── main UI ───────────────────────────────────────────────────────────────────
+# ── Pipeline tab renderer (NEW) ───────────────────────────────────────────────
 
-st.markdown(
-    '<div class="fx-header"><h1>File Extractor</h1><span class="fx-pill">streamlit</span></div>',
-    unsafe_allow_html=True
-)
+def render_pipeline(result: dict, pipe_result: dict):
+    stats     = pipe_result.get("stats", {})
+    chunks    = pipe_result.get("chunks", [])
+    stage_log = pipe_result.get("log", [])
+    structured = pipe_result.get("structured", {})
 
-left, right = st.columns([1, 2], gap="large")
-
-with left:
-    uploaded = st.file_uploader(
-        "Drop a file or click to browse",
-        type=["pdf", "docx", "pptx", "xlsx", "html", "htm", "txt", "jpg", "jpeg", "png"],
-        label_visibility="visible"
+    # ── Stats row ────────────────────────────────────────────────────────────
+    st.markdown(
+        f'<div class="stat-row">'
+        f'<div class="stat-card"><div class="stat-label">Chunks</div>'
+        f'<div class="stat-value">{stats.get("total_chunks", 0)}</div></div>'
+        f'<div class="stat-card"><div class="stat-label">Est. Tokens</div>'
+        f'<div class="stat-value">{stats.get("total_tokens_est", 0):,}</div></div>'
+        f'<div class="stat-card"><div class="stat-label">Avg Tokens</div>'
+        f'<div class="stat-value">{stats.get("avg_tokens", 0)}</div>'
+        f'<div class="stat-sub">min {stats.get("min_tokens",0)} · max {stats.get("max_tokens",0)}</div></div>'
+        f'<div class="stat-card"><div class="stat-label">Sections</div>'
+        f'<div class="stat-value">{len(structured.get("sections", []))}</div></div>'
+        f'</div>',
+        unsafe_allow_html=True,
     )
 
+    # ── Stage timeline ────────────────────────────────────────────────────────
+    with st.expander("⏱ Stage log", expanded=False):
+        items_html = ""
+        for entry in stage_log:
+            ok  = "error" not in entry.get("status", "")
+            dot = "dot-ok" if ok else "dot-err"
+            ms  = f"{entry['elapsed_s']*1000:.1f} ms"
+            items_html += (
+                f'<div class="tl-item">'
+                f'<span class="tl-dot {dot}"></span>'
+                f'<span class="tl-name">{entry["stage"]}</span>'
+                f'<span class="tl-status">{entry["status"]}</span>'
+                f'<span class="tl-ms">{ms}</span>'
+                f'</div>'
+            )
+        st.markdown(f'<div class="timeline">{items_html}</div>', unsafe_allow_html=True)
+
+    # ── Structured JSON ───────────────────────────────────────────────────────
+    with st.expander("🗂 Structured JSON", expanded=False):
+        st.json(structured)
+
+    # ── Chunk viewer ─────────────────────────────────────────────────────────
+    st.markdown(
+        f'<div style="font-size:.7rem;font-family:IBM Plex Mono,monospace;'
+        f'color:#5c5c7a;text-transform:uppercase;letter-spacing:.06em;margin:1rem 0 .5rem 0">'
+        f'{len(chunks)} Chunks</div>',
+        unsafe_allow_html=True,
+    )
+
+    for chunk in chunks:
+        section = chunk.get("section") or "—"
+        tokens  = chunk.get("token_est", 0)
+        ftype   = chunk.get("file_type", "")
+        cid     = chunk.get("chunk_id", "")
+        text    = chunk.get("text", "")
+
+        st.markdown(
+            f'<div class="chunk-card">'
+            f'<div class="chunk-meta">'
+            f'<span class="tag tag-section">{section}</span>'
+            f'<span class="tag tag-tokens">~{tokens} tokens</span>'
+            f'<span class="tag tag-type">{ftype}</span>'
+            f'</div>'
+            f'<div class="chunk-id">{cid}</div>'
+            f'<div class="chunk-text">{text}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Download chunks ───────────────────────────────────────────────────────
+    st.download_button(
+        label="⬇ Download chunks JSON",
+        data=json.dumps(chunks, indent=2, default=str),
+        file_name=f"{result.get('filepath','doc').rsplit('/',1)[-1]}_chunks.json",
+        mime="application/json",
+    )
+
+
+# ── Sidebar: file upload ──────────────────────────────────────────────────────
+
+st.markdown(
+    '<div class="df-header">'
+    '<div class="df-logo">⬡</div>'
+    '<h1 class="df-title">DocFlow</h1>'
+    '<span class="df-sub">extract · clean · structure · chunk</span>'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+with st.sidebar:
+    st.markdown(
+        '<div style="font-size:.7rem;font-family:IBM Plex Mono,monospace;'
+        'color:#5c5c7a;text-transform:uppercase;letter-spacing:.06em;margin-bottom:.75rem">'
+        'Upload</div>',
+        unsafe_allow_html=True,
+    )
+    uploaded = st.file_uploader(
+        "Drop file or click to browse",
+        type=["pdf", "docx", "pptx", "xlsx", "html", "htm", "txt", "jpg", "jpeg", "png"],
+        label_visibility="collapsed",
+    )
     if uploaded:
         st.markdown(
-            f'<div class="fx-card">'
-            f'<div class="fx-card-title">Selected File</div>'
-            f'<div style="font-weight:700;color:#e8e8f0;word-break:break-all">{uploaded.name}</div>'
-            f'<div style="color:#666680;font-size:.78rem;margin-top:.3rem">'
-            f'{format_bytes(uploaded.size)}</div>'
-            f'<span class="badge" style="margin-top:.5rem;display:inline-block">'
-            f'{uploaded.type or "unknown mime"}</span>'
-            f'</div>',
-            unsafe_allow_html=True
+            f'<div style="background:#13131c;border:1px solid #1e1e2e;border-radius:10px;'
+            f'padding:.8rem 1rem;margin-top:.75rem">'
+            f'<div style="font-weight:700;color:#f0f0ff;word-break:break-all;font-size:.85rem">'
+            f'{uploaded.name}</div>'
+            f'<div style="color:#5c5c7a;font-size:.7rem;margin-top:.25rem">'
+            f'{format_bytes(uploaded.size)}</div></div>',
+            unsafe_allow_html=True,
         )
+        run_btn = st.button("Run Pipeline →", use_container_width=True, type="primary")
 
-        extract_clicked = st.button("Extract →", use_container_width=True, type="primary")
+        st.divider()
+        with st.expander("⚙ Chunk settings"):
+            max_chars = st.slider("Max chars / chunk", 500, 3000, 1500, 100)
+            overlap   = st.slider("Overlap chars",      0,  500,  200,  50)
     else:
-        extract_clicked = False
+        run_btn   = False
+        max_chars = 1500
+        overlap   = 200
 
-with right:
-    if not uploaded:
-        st.markdown(
-            '<div style="text-align:center;color:#666680;padding:4rem 0">'
-            '<div style="font-size:4rem">🔍</div>'
-            '<p>Upload a file to extract its content.</p></div>',
-            unsafe_allow_html=True
-        )
-    elif not extract_clicked:
-        st.markdown(
-            '<div style="text-align:center;color:#666680;padding:4rem 0">'
-            '<div style="font-size:4rem">📂</div>'
-            '<p>Click <strong>Extract →</strong> to inspect.</p></div>',
-            unsafe_allow_html=True
-        )
-    else:
-        tmp_path = None
-        try:
-            with st.spinner("Detecting file type and extracting content…"):
-                tmp_path = save_upload_to_temp(uploaded)
-                result = extract(tmp_path)
+# ── Main area: tabs ───────────────────────────────────────────────────────────
 
-            # Detection metadata row
-            render_detection(result)
+if not uploaded:
+    st.markdown(
+        '<div style="text-align:center;color:#3a3a5a;padding:6rem 0">'
+        '<div style="font-size:4rem">⬡</div>'
+        '<p style="font-family:IBM Plex Mono,monospace;font-size:.8rem">'
+        'Upload a file in the sidebar to begin.</p></div>',
+        unsafe_allow_html=True,
+    )
+else:
+    tab_extract, tab_pipeline = st.tabs(["🔍  Extractor", "⚡  Pipeline"])
+
+    tmp_path = None
+    try:
+        tmp_path = save_upload(uploaded)
+
+        # ── Tab 1: raw extractor ──────────────────────────────────────────────
+        with tab_extract:
+            with st.spinner("Extracting…"):
+                ext_result = extract(tmp_path)
+            render_detection(ext_result)
             st.divider()
+            render_content(ext_result)
 
-            # Content
-            render_content(result)
+        # ── Tab 2: full pipeline ──────────────────────────────────────────────
+        with tab_pipeline:
+            if not run_btn:
+                st.markdown(
+                    '<div style="text-align:center;color:#3a3a5a;padding:4rem 0">'
+                    '<div style="font-size:3rem">⚡</div>'
+                    '<p style="font-family:IBM Plex Mono,monospace;font-size:.8rem">'
+                    'Click <strong style="color:#7c8fff">Run Pipeline →</strong> in the sidebar.</p>'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                try:
+                    with st.spinner("Running pipeline…"):
+                        # extractor output is already in ext_result from Tab 1
+                        pipe_result = run_pipeline(
+                            ext_result,
+                            source=uploaded.name,
+                            max_chars=max_chars,
+                            overlap=overlap,
+                        )
+                    render_pipeline(ext_result, pipe_result)
+                except (ValueError, RuntimeError) as exc:
+                    st.markdown(
+                        f'<div class="err-box">⚠ Pipeline error\n\n{exc}</div>',
+                        unsafe_allow_html=True,
+                    )
 
-        except Exception as e:
-            import traceback
-            st.markdown(
-                f'<div class="error-box">⚠ {e}<br><br>{traceback.format_exc()}</div>',
-                unsafe_allow_html=True
-            )
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+    except Exception as e:
+        import traceback
+        st.markdown(
+            f'<div class="err-box">⚠ {e}\n\n{traceback.format_exc()}</div>',
+            unsafe_allow_html=True,
+        )
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
