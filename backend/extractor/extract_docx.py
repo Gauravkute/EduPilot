@@ -31,4 +31,4 @@ def extract(filepath: str) -> dict:
         "created":str(props.created),
     }
 
-    return {"paragraph":paragraphs,"tables":tables,"metadata":meta}
+    return {"paragraphs":paragraphs,"tables":tables,"metadata":meta}

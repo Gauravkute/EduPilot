@@ -1,368 +1,410 @@
 """
-app.py — Flask upload server
-Structure:
+app_streamlit.py — Streamlit File Extractor
+Drop-in replacement for the Flask app.py
+
+Directory structure stays EXACTLY the same:
   backend/
-    app.py              ← YOU ARE HERE
+    app_streamlit.py        ← THIS FILE (run with: streamlit run app_streamlit.py)
     detect_file_type.py
     extractor/
       __init__.py
       extract_*.py
+
+Run:
+    cd backend
+    pip install streamlit
+    streamlit run app_streamlit.py
 """
 
-import os, tempfile, sys
+import sys
+import os
+import json
+import tempfile
+import pandas as pd
+import streamlit as st
 from pathlib import Path
-from flask import Flask, request, jsonify, render_template_string
 
-# app.py is inside backend/, so THIS directory already has detect_file_type.py
-# and the extractor/ package — just add the current dir to sys.path
+# ── path setup (same as app.py) ──────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from extractor import extract
+from extractor import extract  # your existing extractor package
 
-app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB
 
-HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>File Extractor</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+# ── page config ──────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="File Extractor",
+    page_icon="🔍",
+    layout="wide",
+)
+
+# ── custom CSS ────────────────────────────────────────────────────────────────
+st.markdown("""
 <style>
-  :root {
-    --bg:#0a0a0f; --surface:#13131a; --border:#2a2a3a;
-    --accent:#7c6dfa; --accent2:#fa6d9a; --text:#e8e8f0;
-    --muted:#666680; --success:#6dfaaa; --error:#fa6d6d;
-    --mono:'Space Mono',monospace; --sans:'Syne',sans-serif;
-  }
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;display:grid;grid-template-rows:auto 1fr}
-  header{padding:2rem 3rem;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:1rem}
-  header h1{font-size:1.4rem;font-weight:800;letter-spacing:-0.02em}
-  header .pill{font-family:var(--mono);font-size:.65rem;background:var(--accent);color:#fff;padding:2px 8px;border-radius:99px}
-  main{display:grid;grid-template-columns:340px 1fr;height:calc(100vh - 73px)}
-  .panel-left{border-right:1px solid var(--border);padding:2rem;display:flex;flex-direction:column;gap:1.5rem;overflow-y:auto}
-  .dropzone{border:2px dashed var(--border);border-radius:12px;padding:2.5rem 1.5rem;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;position:relative}
-  .dropzone:hover,.dropzone.drag{border-color:var(--accent);background:rgba(124,109,250,.05)}
-  .dropzone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%}
-  .dropzone .icon{font-size:2.5rem;margin-bottom:.75rem}
-  .dropzone p{font-size:.85rem;color:var(--muted)}
-  .dropzone strong{color:var(--accent)}
-  .file-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1rem 1.2rem;display:none;flex-direction:column;gap:.4rem}
-  .file-card.show{display:flex}
-  .file-card .name{font-weight:700;font-size:.9rem;word-break:break-all}
-  .file-card .badge{font-family:var(--mono);font-size:.65rem;background:rgba(124,109,250,.15);color:var(--accent);border:1px solid var(--accent);padding:1px 7px;border-radius:4px;width:fit-content}
-  .file-card .size{font-size:.75rem;color:var(--muted)}
-  button#extractBtn{width:100%;padding:.85rem;background:var(--accent);color:#fff;border:none;border-radius:8px;font-family:var(--sans);font-size:.9rem;font-weight:700;cursor:pointer;transition:opacity .2s,transform .1s;display:none}
-  button#extractBtn.show{display:block}
-  button#extractBtn:hover{opacity:.85}
-  button#extractBtn:active{transform:scale(.98)}
-  button#extractBtn:disabled{opacity:.4;cursor:not-allowed}
-  .meta-block{display:none;flex-direction:column;gap:.5rem}
-  .meta-block.show{display:flex}
-  .meta-block h3{font-size:.7rem;letter-spacing:.08em;color:var(--muted);text-transform:uppercase}
-  .meta-row{display:flex;justify-content:space-between;font-size:.78rem;padding:.35rem 0;border-bottom:1px solid var(--border)}
-  .meta-row .key{color:var(--muted);font-family:var(--mono)}
-  .meta-row .val{color:var(--text);font-weight:700;text-align:right;max-width:55%;word-break:break-all}
-  .panel-right{padding:2rem 2.5rem;overflow-y:auto;display:flex;flex-direction:column;gap:1.5rem}
-  .placeholder{margin:auto;text-align:center;color:var(--muted);font-size:.9rem}
-  .placeholder .big{font-size:4rem;margin-bottom:1rem}
-  .section{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
-  .section-header{padding:.85rem 1.25rem;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
-  .section-header h2{font-size:.8rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
-  .section-header .count{font-family:var(--mono);font-size:.65rem;background:var(--border);padding:2px 8px;border-radius:99px;color:var(--muted)}
-  .section-body{padding:1.25rem}
-  pre.content-text{font-family:var(--mono);font-size:.72rem;line-height:1.7;color:#b0b0cc;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto}
-  .data-table{width:100%;border-collapse:collapse;font-size:.75rem}
-  .data-table th{background:rgba(124,109,250,.1);color:var(--accent);font-family:var(--mono);padding:.4rem .75rem;text-align:left;font-size:.65rem;letter-spacing:.05em}
-  .data-table td{padding:.4rem .75rem;border-bottom:1px solid var(--border);color:var(--text);vertical-align:top}
-  .data-table tr:last-child td{border-bottom:none}
-  .error-box{background:rgba(250,109,109,.08);border:1px solid var(--error);border-radius:8px;padding:1rem 1.25rem;font-family:var(--mono);font-size:.78rem;color:var(--error);white-space:pre-wrap;word-break:break-word}
-  .spinner{width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;display:none;margin:auto}
-  .spinner.show{display:block}
-  @keyframes spin{to{transform:rotate(360deg)}}
-  .img-grid{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.75rem}
-  .img-chip{font-family:var(--mono);font-size:.65rem;background:rgba(250,109,154,.1);border:1px solid var(--accent2);color:var(--accent2);padding:2px 8px;border-radius:4px}
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'Syne', sans-serif !important;
+}
+code, pre, .mono {
+    font-family: 'Space Mono', monospace !important;
+}
+
+/* Dark background override */
+.stApp { background-color: #0a0a0f; }
+
+/* Hide Streamlit default header/footer */
+#MainMenu, footer, header { visibility: hidden; }
+
+/* Custom header */
+.fx-header {
+    padding: 1.5rem 0 1rem 0;
+    border-bottom: 1px solid #2a2a3a;
+    margin-bottom: 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+.fx-header h1 {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: 1.5rem;
+    color: #e8e8f0;
+    margin: 0;
+}
+.fx-pill {
+    font-family: 'Space Mono', monospace;
+    font-size: 0.65rem;
+    background: #7c6dfa;
+    color: #fff;
+    padding: 2px 10px;
+    border-radius: 99px;
+}
+
+/* Detection badges */
+.badge {
+    display: inline-block;
+    font-family: 'Space Mono', monospace;
+    font-size: 0.7rem;
+    background: rgba(124,109,250,0.15);
+    color: #7c6dfa;
+    border: 1px solid #7c6dfa;
+    padding: 1px 8px;
+    border-radius: 4px;
+    margin-right: 6px;
+}
+.badge-success { background: rgba(109,250,170,0.12); color: #6dfaaa; border-color: #6dfaaa; }
+.badge-error   { background: rgba(250,109,109,0.12); color: #fa6d6d; border-color: #fa6d6d; }
+
+/* Section cards */
+.fx-card {
+    background: #13131a;
+    border: 1px solid #2a2a3a;
+    border-radius: 12px;
+    padding: 1.25rem;
+    margin-bottom: 1rem;
+}
+.fx-card-title {
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: #666680;
+    margin-bottom: 0.75rem;
+}
+
+/* Error box */
+.error-box {
+    background: rgba(250,109,109,0.08);
+    border: 1px solid #fa6d6d;
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    font-family: 'Space Mono', monospace;
+    font-size: 0.78rem;
+    color: #fa6d6d;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* Streamlit widget text color fixes */
+label, .stMarkdown p { color: #e8e8f0 !important; }
+.stTextInput input, .stSelectbox select { background: #13131a !important; color: #e8e8f0 !important; }
 </style>
-</head>
-<body>
-<header>
-  <h1>File Extractor</h1>
-  <span class="pill">v1.0</span>
-</header>
-<main>
-  <aside class="panel-left">
-    <div class="dropzone" id="dropzone">
-      <input type="file" id="fileInput" accept=".pdf,.docx,.pptx,.xlsx,.html,.htm,.txt,.jpg,.jpeg,.png">
-      <div class="icon">📂</div>
-      <p>Drop file here or <strong>browse</strong></p>
-      <p style="margin-top:.4rem;font-size:.75rem">PDF · DOCX · PPTX · XLSX · HTML · TXT · JPG · PNG</p>
-    </div>
-    <div class="file-card" id="fileCard">
-      <span class="name" id="fileName"></span>
-      <span class="badge" id="fileType"></span>
-      <span class="size" id="fileSize"></span>
-    </div>
-    <button id="extractBtn">Extract →</button>
-    <div class="spinner" id="spinner"></div>
-    <div class="meta-block" id="metaBlock">
-      <h3>Detection</h3>
-      <div id="metaRows"></div>
-    </div>
-  </aside>
-  <section class="panel-right" id="rightPanel">
-    <div class="placeholder"><div class="big">🔍</div><p>Upload a file to extract its content.</p></div>
-  </section>
-</main>
-<script>
-const dropzone   = document.getElementById('dropzone');
-const fileInput  = document.getElementById('fileInput');
-const fileCard   = document.getElementById('fileCard');
-const extractBtn = document.getElementById('extractBtn');
-const spinner    = document.getElementById('spinner');
-const metaBlock  = document.getElementById('metaBlock');
-const metaRows   = document.getElementById('metaRows');
-const rightPanel = document.getElementById('rightPanel');
-let selectedFile = null;
+""", unsafe_allow_html=True)
 
-dropzone.addEventListener('dragover',  e => { e.preventDefault(); dropzone.classList.add('drag'); });
-dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag'));
-dropzone.addEventListener('drop', e => {
-  e.preventDefault(); dropzone.classList.remove('drag');
-  if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
-});
-fileInput.addEventListener('change', () => { if (fileInput.files[0]) setFile(fileInput.files[0]); });
 
-function setFile(file) {
-  selectedFile = file;
-  document.getElementById('fileName').textContent = file.name;
-  document.getElementById('fileType').textContent  = file.type || 'unknown mime';
-  document.getElementById('fileSize').textContent  = formatBytes(file.size);
-  fileCard.classList.add('show');
-  extractBtn.classList.add('show');
-  metaBlock.classList.remove('show');
-  rightPanel.innerHTML = '<div class="placeholder"><div class="big">🔍</div><p>Click <strong>Extract</strong> to inspect.</p></div>';
-}
+# ── helpers ───────────────────────────────────────────────────────────────────
 
-function formatBytes(b) {
-  if (b < 1024) return b + ' B';
-  if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
-  return (b/1048576).toFixed(1) + ' MB';
-}
+def format_bytes(b: int) -> str:
+    if b < 1024:        return f"{b} B"
+    if b < 1_048_576:   return f"{b/1024:.1f} KB"
+    return f"{b/1_048_576:.1f} MB"
 
-extractBtn.addEventListener('click', async () => {
-  if (!selectedFile) return;
-  extractBtn.disabled = true;
-  spinner.classList.add('show');
-  rightPanel.innerHTML = '';
 
-  const fd = new FormData();
-  fd.append('file', selectedFile);
+def save_upload_to_temp(uploaded_file) -> str:
+    """Save a Streamlit UploadedFile to a temp path; returns the path."""
+    suffix = Path(uploaded_file.name).suffix or ".bin"
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+    os.close(tmp_fd)
+    with open(tmp_path, "wb") as f:
+        f.write(uploaded_file.getvalue())
+    return tmp_path
 
-  try {
-    const res  = await fetch('/upload', { method: 'POST', body: fd });
-    const data = await res.json();
-    renderMeta(data);
-    renderContent(data);
-  } catch(err) {
-    rightPanel.innerHTML = `<div class="error-box">Request failed: ${err.message}</div>`;
-  } finally {
-    extractBtn.disabled = false;
-    spinner.classList.remove('show');
-  }
-});
 
-function renderMeta(data) {
-  const rows = [
-    ['type',   data.type   || '—'],
-    ['mime',   data.mime   || '—'],
-    ['source', data.source || '—'],
-    ['error',  data.error  || 'none'],
-  ];
-  metaRows.innerHTML = rows.map(([k,v]) =>
-    `<div class="meta-row"><span class="key">${k}</span><span class="val">${esc(String(v))}</span></div>`
-  ).join('');
-  metaBlock.classList.add('show');
-}
+def render_detection(result: dict):
+    """Show file type detection metadata."""
+    cols = st.columns(4)
+    labels = ["type", "mime", "source", "error"]
+    for col, label in zip(cols, labels):
+        val = result.get(label) or ("none" if label == "error" else "—")
+        badge_cls = "badge-error" if label == "error" and result.get("error") else \
+                    "badge-success" if label == "type" else "badge"
+        col.markdown(
+            f'<div class="fx-card"><div class="fx-card-title">{label}</div>'
+            f'<span class="badge {badge_cls}">{val}</span></div>',
+            unsafe_allow_html=True
+        )
 
-function renderContent(data) {
-  rightPanel.innerHTML = '';
 
-  if (data.error) {
-    // Show error + traceback if present for easier debugging
-    const tb = data.traceback ? `\n\nTraceback:\n${data.traceback}` : '';
-    rightPanel.innerHTML = `<div class="error-box">⚠ ${esc(data.error)}${esc(tb)}</div>`;
-    return;
-  }
+def render_pdf(c: dict):
+    st.markdown(f'<div class="fx-card"><div class="fx-card-title">Document Info</div>'
+                f'Pages: <b style="color:#e8e8f0">{c.get("page_count","—")}</b></div>',
+                unsafe_allow_html=True)
 
-  const c = data.content;
-  if (!c) { rightPanel.innerHTML = '<div class="error-box">No content returned.</div>'; return; }
+    meta = c.get("metadata", {})
+    if meta:
+        with st.expander("📄 Document Metadata", expanded=False):
+            for k, v in meta.items():
+                st.markdown(f"`{k}` → **{v}**")
 
-  const type = data.type;
+    pages = c.get("pages", [])
+    for pg in pages:
+        with st.expander(f"Page {pg['page']} · {pg['mode']}  |  "
+                         f"{pg['table_count']} tables · {pg['image_count']} images"):
+            st.text_area("Text", value=pg.get("text", "(no text)"),
+                         height=150, key=f"pdf_pg_{pg['page']}", disabled=True)
 
-  if (type === 'pdf') {
-    addMeta(c.metadata, 'Document Metadata');
-    addKeyVal({ 'Page count': c.page_count });
-    c.pages?.forEach(pg => {
-      addSection(
-        `Page ${pg.page} · ${pg.mode}`,
-        `${pg.table_count} tables · ${pg.image_count} images`,
-        `<pre class="content-text">${esc(pg.text || '(no text)')}</pre>` +
-        (pg.tables?.length ? pg.tables.map(t => tableHTML(t)).join('') : '') +
-        (pg.images?.length ? `<div class="img-grid">${pg.images.map(i=>`<div class="img-chip">${i.format} ${i.width}×${i.height}</div>`).join('')}</div>` : '')
-      );
-    });
-    return;
-  }
+            for i, table in enumerate(pg.get("tables", [])):
+                st.markdown(f"**Table {i+1}**")
+                if table and len(table) > 1:
+                    df = pd.DataFrame(table[1:], columns=table[0])
+                    st.dataframe(df, use_container_width=True)
+                elif table:
+                    st.dataframe(pd.DataFrame(table), use_container_width=True)
 
-  if (type === 'docx') {
-    addMeta(c.metadata, 'Document Metadata');
-    addKeyVal({ Paragraphs: c.paragraph?.length || 0, Tables: c.tables?.length || 0 });
-    if (c.paragraph?.length) {
-      addSection('Paragraphs', c.paragraph.length,
-        c.paragraph.map(p =>
-          `<div style="border-left:2px solid var(--border);padding-left:.75rem;margin-bottom:.5rem">
-            <span style="font-size:.65rem;color:var(--muted)">${esc(p.style)}</span>
-            <div style="font-size:.8rem">${esc(p.text)}</div>
-           </div>`
-        ).join('')
-      );
+            images = pg.get("images", [])
+            if images:
+                chips = " ".join(
+                    f'<span class="badge">{img["format"]} {img["width"]}×{img["height"]}</span>'
+                    for img in images
+                )
+                st.markdown(f"**Embedded images:** {chips}", unsafe_allow_html=True)
+
+
+def render_docx(c: dict):
+    meta = c.get("metadata", {})
+    paras = c.get("paragraphs", c.get("paragraph", []))  # handle both key names
+    tables = c.get("tables", [])
+
+    col1, col2 = st.columns(2)
+    col1.metric("Paragraphs", len(paras))
+    col2.metric("Tables", len(tables))
+
+    if meta:
+        with st.expander("📄 Document Metadata"):
+            for k, v in meta.items():
+                st.markdown(f"`{k}` → **{v}**")
+
+    if paras:
+        with st.expander(f"📝 Paragraphs ({len(paras)})", expanded=True):
+            for p in paras:
+                style_color = "#7c6dfa" if "Heading" in p.get("style","") else "#666680"
+                st.markdown(
+                    f'<div style="border-left:2px solid {style_color};padding-left:.75rem;margin-bottom:.6rem">'
+                    f'<span style="font-size:.65rem;color:{style_color};font-family:Space Mono,monospace">'
+                    f'{p.get("style","")}</span>'
+                    f'<div style="color:#e8e8f0;font-size:.85rem">{p.get("text","")}</div></div>',
+                    unsafe_allow_html=True
+                )
+
+    for i, table in enumerate(tables):
+        with st.expander(f"📊 Table {i+1} ({len(table)} rows)"):
+            if table and len(table) > 1:
+                df = pd.DataFrame(table[1:], columns=table[0])
+                st.dataframe(df, use_container_width=True)
+            elif table:
+                st.dataframe(pd.DataFrame(table), use_container_width=True)
+
+
+def render_pptx(c: dict):
+    st.metric("Slides", c.get("slide_count", 0))
+    for slide in c.get("slides", []):
+        with st.expander(f"🖼 Slide {slide['slide']}  |  {slide['text_count']} text items"):
+            texts = slide.get("texts", [])
+            if texts:
+                for t in texts:
+                    st.markdown(f"- {t}")
+            notes = slide.get("notes", "")
+            if notes:
+                st.caption(f"📝 Notes: {notes}")
+
+
+def render_xlsx(c: dict):
+    st.metric("Sheets", c.get("sheet_count", 0))
+    for sheet_name, rows in c.get("sheets", {}).items():
+        with st.expander(f"📊 {sheet_name}  ({len(rows)} rows)", expanded=True):
+            if rows and len(rows) > 1:
+                df = pd.DataFrame(rows[1:], columns=rows[0])
+                st.dataframe(df, use_container_width=True)
+            elif rows:
+                st.dataframe(pd.DataFrame(rows), use_container_width=True)
+            else:
+                st.caption("Empty sheet")
+
+
+def render_html(c: dict):
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Title", c.get("title") or "—")
+    col2.metric("Lines", len(c.get("text_lines", [])))
+    col3.metric("Links", len(c.get("links", [])))
+
+    lines = c.get("text_lines", [])
+    if lines:
+        with st.expander("📄 Text Content", expanded=True):
+            st.text_area("", value="\n".join(lines), height=200, disabled=True)
+
+    links = c.get("links", [])
+    if links:
+        with st.expander(f"🔗 Links ({len(links)})"):
+            df = pd.DataFrame(links)
+            st.dataframe(df, use_container_width=True)
+
+
+def render_txt(c: dict):
+    col1, col2 = st.columns(2)
+    col1.metric("Total Lines", c.get("line_count", 0))
+    col2.metric("Non-empty Lines", c.get("non_empty_lines", 0))
+    lines = c.get("lines", [])
+    if lines:
+        with st.expander("📄 Content", expanded=True):
+            st.text_area("", value="\n".join(lines), height=300, disabled=True)
+
+
+def render_image(c: dict):
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Format", c.get("format", "—"))
+    col2.metric("Mode", c.get("mode", "—"))
+    col3.metric("Width", c.get("width", "—"))
+    col4.metric("Height", c.get("height", "—"))
+    exif = c.get("exif", {})
+    if exif:
+        with st.expander("📷 EXIF Data"):
+            for k, v in exif.items():
+                st.markdown(f"`{k}` → {v}")
+
+
+def render_content(result: dict):
+    ftype = result.get("type")
+    c = result.get("content")
+
+    if result.get("error"):
+        tb = result.get("traceback", "")
+        st.markdown(
+            f'<div class="error-box">⚠ {result["error"]}'
+            f'{"<br><br>Traceback:<br>" + tb if tb else ""}</div>',
+            unsafe_allow_html=True
+        )
+        return
+
+    if not c:
+        st.warning("No content returned.")
+        return
+
+    dispatch = {
+        "pdf":  render_pdf,
+        "docx": render_docx,
+        "pptx": render_pptx,
+        "xlsx": render_xlsx,
+        "html": render_html,
+        "txt":  render_txt,
+        "jpg":  render_image,
+        "png":  render_image,
     }
-    c.tables?.forEach((t,i) => addSection(`Table ${i+1}`, t.length+' rows', tableHTML(t)));
-    return;
-  }
 
-  if (type === 'pptx') {
-    addKeyVal({ 'Slide count': c.slide_count });
-    c.slides?.forEach(s =>
-      addSection(`Slide ${s.slide}`, s.text_count+' text items',
-        `<pre class="content-text">${esc((s.texts||[]).join('\n'))}</pre>` +
-        (s.notes ? `<div style="margin-top:.75rem;font-size:.75rem;color:var(--muted)">Notes: ${esc(s.notes)}</div>` : '')
-      )
-    );
-    return;
-  }
-
-  if (type === 'xlsx') {
-    addKeyVal({ Sheets: c.sheet_count });
-    Object.entries(c.sheets || {}).forEach(([name, rows]) =>
-      addSection(`Sheet: ${name}`, rows.length+' rows', tableHTML(rows))
-    );
-    return;
-  }
-
-  if (type === 'html') {
-    addKeyVal({ Title: c.title || '—', Lines: c.text_lines?.length, Links: c.links?.length });
-    if (c.text_lines?.length) addSection('Text Content', c.text_lines.length+' lines',
-      `<pre class="content-text">${esc(c.text_lines.join('\n'))}</pre>`);
-    if (c.links?.length) addSection('Links', c.links.length,
-      tableHTML([['Text','Href'], ...c.links.map(l=>[l.text,l.href])]));
-    return;
-  }
-
-  if (type === 'txt') {
-    addKeyVal({ Lines: c.line_count, 'Non-empty': c.non_empty_lines });
-    addSection('Content', c.line_count+' lines',
-      `<pre class="content-text">${esc(c.lines?.join('\n'))}</pre>`);
-    return;
-  }
-
-  if (type === 'jpg' || type === 'png') {
-    addKeyVal({ Format: c.format, Mode: c.mode, Width: c.width, Height: c.height });
-    if (c.exif && Object.keys(c.exif).length) addMeta(c.exif, 'EXIF Data');
-    return;
-  }
-
-  addSection('Raw Output', '', `<pre class="content-text">${esc(JSON.stringify(c, null, 2))}</pre>`);
-}
-
-function addSection(title, badge, bodyHTML) {
-  const el = document.createElement('div');
-  el.className = 'section';
-  el.innerHTML = `
-    <div class="section-header">
-      <h2>${esc(String(title))}</h2>
-      ${badge !== '' ? `<span class="count">${esc(String(badge))}</span>` : ''}
-    </div>
-    <div class="section-body">${bodyHTML}</div>`;
-  rightPanel.appendChild(el);
-}
-
-function addKeyVal(obj) {
-  const rows = Object.entries(obj).map(([k,v]) =>
-    `<div class="meta-row"><span class="key">${k}</span><span class="val">${esc(String(v))}</span></div>`
-  ).join('');
-  addSection('Summary', '', rows);
-}
-
-function addMeta(obj, title='Metadata') {
-  if (!obj || !Object.keys(obj).length) return;
-  const rows = Object.entries(obj).map(([k,v]) =>
-    `<div class="meta-row"><span class="key">${k}</span><span class="val">${esc(String(v))}</span></div>`
-  ).join('');
-  addSection(title, Object.keys(obj).length+' fields', rows);
-}
-
-function tableHTML(rows) {
-  if (!rows?.length) return '<p style="color:var(--muted);font-size:.8rem">Empty table</p>';
-  const [head, ...body] = rows;
-  return `<div style="overflow-x:auto"><table class="data-table">
-    <thead><tr>${head.map(h=>`<th>${esc(String(h))}</th>`).join('')}</tr></thead>
-    <tbody>${body.map(r=>`<tr>${r.map(c=>`<td>${esc(String(c))}</td>`).join('')}</tr>`).join('')}</tbody>
-  </table></div>`;
-}
-
-function esc(s='') {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-</script>
-</body>
-</html>"""
+    renderer = dispatch.get(ftype)
+    if renderer:
+        renderer(c)
+    else:
+        st.json(c)  # fallback: raw JSON
 
 
-@app.route("/")
-def index():
-    return render_template_string(HTML)
+# ── main UI ───────────────────────────────────────────────────────────────────
 
+st.markdown(
+    '<div class="fx-header"><h1>File Extractor</h1><span class="fx-pill">streamlit</span></div>',
+    unsafe_allow_html=True
+)
 
-@app.route("/upload", methods=["POST"])
-def upload():
-    f = request.files.get("file")
-    if not f:
-        return jsonify({"error": "No file received"}), 400
+left, right = st.columns([1, 2], gap="large")
 
-    suffix = Path(f.filename).suffix or ".bin"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        f.save(tmp.name)
-        tmp_path = tmp.name
+with left:
+    uploaded = st.file_uploader(
+        "Drop a file or click to browse",
+        type=["pdf", "docx", "pptx", "xlsx", "html", "htm", "txt", "jpg", "jpeg", "png"],
+        label_visibility="visible"
+    )
 
-    try:
-        result = extract(tmp_path)
-        return jsonify(_serialise(result))
-    except Exception as e:
-        import traceback
-        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
-    finally:
+    if uploaded:
+        st.markdown(
+            f'<div class="fx-card">'
+            f'<div class="fx-card-title">Selected File</div>'
+            f'<div style="font-weight:700;color:#e8e8f0;word-break:break-all">{uploaded.name}</div>'
+            f'<div style="color:#666680;font-size:.78rem;margin-top:.3rem">'
+            f'{format_bytes(uploaded.size)}</div>'
+            f'<span class="badge" style="margin-top:.5rem;display:inline-block">'
+            f'{uploaded.type or "unknown mime"}</span>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+
+        extract_clicked = st.button("Extract →", use_container_width=True, type="primary")
+    else:
+        extract_clicked = False
+
+with right:
+    if not uploaded:
+        st.markdown(
+            '<div style="text-align:center;color:#666680;padding:4rem 0">'
+            '<div style="font-size:4rem">🔍</div>'
+            '<p>Upload a file to extract its content.</p></div>',
+            unsafe_allow_html=True
+        )
+    elif not extract_clicked:
+        st.markdown(
+            '<div style="text-align:center;color:#666680;padding:4rem 0">'
+            '<div style="font-size:4rem">📂</div>'
+            '<p>Click <strong>Extract →</strong> to inspect.</p></div>',
+            unsafe_allow_html=True
+        )
+    else:
+        tmp_path = None
         try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
+            with st.spinner("Detecting file type and extracting content…"):
+                tmp_path = save_upload_to_temp(uploaded)
+                result = extract(tmp_path)
 
+            # Detection metadata row
+            render_detection(result)
+            st.divider()
 
-def _serialise(obj):
-    if isinstance(obj, dict):
-        return {k: _serialise(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_serialise(i) for i in obj]
-    if isinstance(obj, bytes):
-        return f"<bytes len={len(obj)}>"
-    try:
-        import json; json.dumps(obj)
-        return obj
-    except (TypeError, ValueError):
-        return str(obj)
+            # Content
+            render_content(result)
 
-
-if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+        except Exception as e:
+            import traceback
+            st.markdown(
+                f'<div class="error-box">⚠ {e}<br><br>{traceback.format_exc()}</div>',
+                unsafe_allow_html=True
+            )
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)

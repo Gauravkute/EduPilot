@@ -35,11 +35,42 @@
 #     except Exception as e:
 #         return {**base,"content":None,"error":str(e)}
 
-import importlib, sys, os
-sys.path.insert(0, os.path.dirname(__file__) + "/..")
-from detect_file_type import detect_file_type
+# import importlib, sys, os
+# sys.path.insert(0, os.path.dirname(__file__))
+# from detect_file_type import detect_file_type
 
-# Lazy router — modules imported only when needed
+# # Lazy router — modules imported only when needed
+# _ROUTER = {
+#     "pdf":  "extractor.extract_pdf",
+#     "docx": "extractor.extract_docx",
+#     "pptx": "extractor.extract_pptx",
+#     "xlsx": "extractor.extract_xlsx",
+#     "html": "extractor.extract_html",
+#     "txt":  "extractor.extract_txt",
+#     "jpg":  "extractor.extract_image",
+#     "png":  "extractor.extract_image",
+# }
+
+
+# def extract(filepath: str) -> dict:
+#     detection = detect_file_type(filepath)
+#     ftype = detection["type"]
+#     base = {"filepath": filepath, **detection, "error": None}
+
+#     module_name = _ROUTER.get(ftype)
+#     if module_name is None:
+#         return {**base, "content": None, "error": f"No extractor for type '{ftype}'"}
+
+#     try:
+#         module = importlib.import_module(module_name)
+#         content = module.extract(filepath)
+#         return {**base, "content": content}
+#     except Exception as e:
+#         return {**base, "content": None, "error": str(e)}
+
+import importlib
+from detect_file_type import detect_file_type   # caller sets sys.path
+
 _ROUTER = {
     "pdf":  "extractor.extract_pdf",
     "docx": "extractor.extract_docx",
@@ -50,7 +81,6 @@ _ROUTER = {
     "jpg":  "extractor.extract_image",
     "png":  "extractor.extract_image",
 }
-
 
 def extract(filepath: str) -> dict:
     detection = detect_file_type(filepath)
